@@ -1,0 +1,96 @@
+name: Build Shiro APK
+# Put this file at .github/workflows/build.yml and put Shiro-Android-Project.zip in the repo root.
+# The workflow unzips the project and builds an installable APK. No other files are needed.
+on:
+  push:
+  workflow_dispatch:
+permissions:
+  contents: read
+defaults:
+  run:
+    working-directory: proj
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Unpack the project zip
+        working-directory: .
+        run: |
+          set -e
+          zipfile=$(ls -1 *.zip 2>/dev/null | head -n 1 || true)
+          if [ -z "$zipfile" ]; then echo "::error::No .zip file found in the repo root. Upload Shiro-Android-Project.zip next to the .github folder."; exit 1; fi
+          echo "Using $zipfile"
+          mkdir -p unpacked && unzip -q "$zipfile" -d unpacked
+          settings=$(find unpacked -name settings.gradle.kts | head -n 1)
+          if [ -z "$settings" ]; then echo "::error::settings.gradle.kts not found inside the zip."; exit 1; fi
+          mkdir -p proj && cp -a "$(dirname "$settings")"/. proj/
+          ls -la proj
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Download sherpa-onnx Android AAR
+        run: |
+          mkdir -p app/libs
+          curl -fL -o app/libs/sherpa-onnx-1.13.8.aar \
+            https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar
+
+      - name: Check the AAR contains the Kotlin API we use
+        run: |
+          unzip -p app/libs/sherpa-onnx-1.13.8.aar classes.jar > /tmp/classes.jar
+          for c in OfflineTts OfflineRecognizer OfflineTtsVitsModelConfig OfflineWhisperModelConfig FeatureConfig; do
+            unzip -l /tmp/classes.jar | grep -q "com/k2fsa/sherpa/onnx/$c" \
+              || { echo "::error::$c is missing from the sherpa-onnx AAR"; exit 1; }
+          done
+          unzip -l app/libs/sherpa-onnx-1.13.8.aar | grep -E "arm64-v8a/.*\.so" || { echo "::error::no arm64 libraries"; exit 1; }
+
+      - name: Check that every model download link is alive (report only)
+        continue-on-error: true
+        run: |
+          {
+            echo "### Download link check"
+            echo '| URL | HTTP |'
+            echo '|---|---|'
+          } >> "$GITHUB_STEP_SUMMARY"
+          urls=$(
+            grep -oE 'https://[^"]+(task|tar\.bz2)' app/src/main/java/com/shiro/companion/ModelStore.kt | grep -v '\$' ;
+            grep -oE 'VoiceSpec\.Piper\("[^"]+"\)' app/src/main/java/com/shiro/companion/Languages.kt \
+              | sed -E 's/.*"([^"]+)".*/https:\/\/github.com\/k2-fsa\/sherpa-onnx\/releases\/download\/tts-models\/\1.tar.bz2/' ;
+            grep -oE 'VoiceSpec\.Mms\("[^"]+"\)' app/src/main/java/com/shiro/companion/Languages.kt \
+              | sed -E 's/.*"([^"]+)".*/https:\/\/huggingface.co\/willwade\/mms-tts-multilingual-models-onnx\/resolve\/main\/\1\/model.onnx/'
+          )
+          bad=0
+          for u in $urls; do
+            code=$(curl -sL -r 0-0 -o /dev/null -w '%{http_code}' "$u" || echo 000)
+            echo "| $u | $code |" >> "$GITHUB_STEP_SUMMARY"
+            case "$code" in 200|206) ;; *) echo "::warning::$u answered HTTP $code"; bad=1 ;; esac
+          done
+          exit $bad
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Unit tests (report only)
+        continue-on-error: true
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Build installable APK
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Shiro-APK
+          path: proj/app/build/outputs/apk/release/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-test-reports
+          path: proj/app/build/reports/tests/
+          if-no-files-found: ignore
+          
