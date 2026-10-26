@@ -79,7 +79,23 @@ jobs:
         continue-on-error: true
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
+      - name: Prepare signing key (only if you added the secrets)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/shiro-release.jks"
+            echo "SHIRO_KEYSTORE_PATH=$RUNNER_TEMP/shiro-release.jks" >> "$GITHUB_ENV"
+            echo "Release key found: the APK will be signed with it."
+          else
+            echo "No release key secrets: the APK uses the debug key (fine for testing)."
+          fi
+
       - name: Build installable APK
+        env:
+          SHIRO_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SHIRO_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          SHIRO_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: gradle assembleRelease --no-daemon --stacktrace
 
       - uses: actions/upload-artifact@v4
@@ -93,4 +109,3 @@ jobs:
           name: unit-test-reports
           path: proj/app/build/reports/tests/
           if-no-files-found: ignore
-          
