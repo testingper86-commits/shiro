@@ -75,8 +75,7 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Unit tests (report only)
-        continue-on-error: true
+      - name: Unit tests
         run: gradle testDebugUnitTest --no-daemon --stacktrace
 
       - name: Prepare signing key (only if you added the secrets)
